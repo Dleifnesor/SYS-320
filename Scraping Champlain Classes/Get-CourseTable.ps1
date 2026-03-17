@@ -5,29 +5,58 @@ function Get-CourseTable {
 
     $response = Invoke-WebRequest -Uri $Url
     $table    = $response.ParsedHtml.getElementsByTagName("table") | Select-Object -First 1
-    $rows     = $table.getElementsByTagName("tr")
 
-    # Pull headers from <th> tags; fall back to first row <td> if no <th> present
-    $headers = @()
-    $firstRow = $rows[0]
-    $headerCells = $firstRow.getElementsByTagName("th")
-    if ($headerCells.length -eq 0) {
-        $headerCells = $firstRow.getElementsByTagName("td")
+    # @() forces COM collection into a real PS array so integer indexing works
+    $rows = @($table.getElementsByTagName("tr"))
+
+    # Extract headers as plain strings
+    $headers     = @()
+    $headerCells = @($rows[0].getElementsByTagName("th"))
+    if ($headerCells.Count -eq 0) {
+        $headerCells = @($rows[0].getElementsByTagName("td"))
     }
     foreach ($cell in $headerCells) {
         $headers += $cell.innerText.Trim()
     }
 
     $courses = @()
-    for ($i = 1; $i -lt $rows.length; $i++) {
-        $cells = $rows[$i].getElementsByTagName("td")
-        if ($cells.length -eq 0) { continue }
+    for ($i = 1; $i -lt $rows.Count; $i++) {
+        $comCells = @($rows[$i].getElementsByTagName("td"))
+        if ($comCells.Count -eq 0) { continue }
+
+        # Extract all innerText into a plain string array before any manipulation
+        $vals = @()
+        foreach ($cell in $comCells) {
+            $vals += $cell.innerText.Trim()
+        }
+
+        # TBA rows omit Times column (9 strings instead of 10)
+        # Insert empty string at index 5 to realign columns
+        if ($vals.Count -eq 9) {
+            $vals = $vals[0..4] + @("") + $vals[5..8]
+        }
 
         $obj = [PSCustomObject]@{}
         for ($j = 0; $j -lt $headers.Count; $j++) {
-            $val = if ($j -lt $cells.length) { $cells[$j].innerText.Trim() } else { "" }
-            $obj | Add-Member -NotePropertyName $headers[$j] -NotePropertyValue $val
+            $v = if ($j -lt $vals.Count) { $vals[$j] } else { "" }
+            $obj | Add-Member -NotePropertyName $headers[$j] -NotePropertyValue $v
         }
+
+        # Rename Number -> Class Code
+        $obj | Add-Member -NotePropertyName "Class Code" -NotePropertyValue $obj.Number
+        $obj.PSObject.Properties.Remove("Number")
+
+        # Split Times -> Time Start / Time End
+        $times = $obj.Times
+        if ($times -match "^(.+?)-(.+)$") {
+            $obj | Add-Member -NotePropertyName "Time Start" -NotePropertyValue $Matches[1]
+            $obj | Add-Member -NotePropertyName "Time End"   -NotePropertyValue $Matches[2]
+        } else {
+            $obj | Add-Member -NotePropertyName "Time Start" -NotePropertyValue $times
+            $obj | Add-Member -NotePropertyName "Time End"   -NotePropertyValue ""
+        }
+        $obj.PSObject.Properties.Remove("Times")
+
         $courses += $obj
     }
 
@@ -44,7 +73,7 @@ function Translate-Days {
         $raw      = $course.Days
         $dayArray = @()
 
-        # Wildcards per lab hint — R = Thursday to avoid clash with T = Tuesday
+        # R = Thursday to avoid clash with T = Tuesday
         if ($raw -like "*M*") { $dayArray += "Monday"    }
         if ($raw -like "*T*") { $dayArray += "Tuesday"   }
         if ($raw -like "*W*") { $dayArray += "Wednesday" }
